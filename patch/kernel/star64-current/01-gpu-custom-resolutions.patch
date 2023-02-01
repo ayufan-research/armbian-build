@@ -1,0 +1,294 @@
+diff --git a/drivers/gpu/drm/drm_client_modeset.c b/drivers/gpu/drm/drm_client_modeset.c
+index ced09c7c0..b3ee687b4 100644
+--- a/drivers/gpu/drm/drm_client_modeset.c
++++ b/drivers/gpu/drm/drm_client_modeset.c
+@@ -782,21 +782,32 @@ int drm_client_modeset_probe(struct drm_client_dev *client, unsigned int width,
+ 	if (!height)
+ 		height = dev->mode_config.max_height;
+ 
++	DRM_DEV_INFO(client->dev->dev, "before iter");
++
+ 	drm_connector_list_iter_begin(dev, &conn_iter);
+-	drm_client_for_each_connector_iter(connector, &conn_iter) {
+-		struct drm_connector **tmp;
++	DRM_DEV_INFO(client->dev->dev, "iter start");
+ 
+-		tmp = krealloc(connectors, (connector_count + 1) * sizeof(*connectors), GFP_KERNEL);
+-		if (!tmp) {
+-			ret = -ENOMEM;
+-			goto free_connectors;
+-		}
++	while ((connector = drm_connector_list_iter_next(&conn_iter))) {
++		DRM_DEV_INFO(client->dev->dev, "iter connector: %p, count=%d", connector, connector_count);
++
++		if (connector->connector_type != DRM_MODE_CONNECTOR_WRITEBACK) {
++			struct drm_connector **tmp;
++
++			tmp = krealloc(connectors, (connector_count + 1) * sizeof(*connectors), GFP_KERNEL);
++			if (!tmp) {
++				ret = -ENOMEM;
++				goto free_connectors;
++			}
++
++			DRM_DEV_INFO(connector->kdev, "connector get");
+ 
+-		connectors = tmp;
+-		drm_connector_get(connector);
+-		connectors[connector_count++] = connector;
++			connectors = tmp;
++			drm_connector_get(connector);
++			connectors[connector_count++] = connector;
++		}
+ 	}
+ 	drm_connector_list_iter_end(&conn_iter);
++	DRM_DEV_INFO(client->dev->dev, "done iter: %d", connector_count);
+ 
+ 	if (!connector_count)
+ 		return 0;
+@@ -814,8 +825,10 @@ int drm_client_modeset_probe(struct drm_client_dev *client, unsigned int width,
+ 	mutex_lock(&client->modeset_mutex);
+ 
+ 	mutex_lock(&dev->mode_config.mutex);
+-	for (i = 0; i < connector_count; i++)
++	for (i = 0; i < connector_count; i++) {
+ 		total_modes_count += connectors[i]->funcs->fill_modes(connectors[i], width, height);
++		DRM_DEV_INFO(connectors[i]->kdev, "connector total_modes: %d", total_modes_count);
++	}
+ 	if (!total_modes_count)
+ 		DRM_DEBUG_KMS("No connectors reported connected with modes\n");
+ 	drm_client_connectors_enabled(connectors, connector_count, enabled);
+diff --git a/drivers/gpu/drm/drm_connector.c b/drivers/gpu/drm/drm_connector.c
+index 2ba257b1a..b77ad6cda 100644
+--- a/drivers/gpu/drm/drm_connector.c
++++ b/drivers/gpu/drm/drm_connector.c
+@@ -700,7 +700,10 @@ drm_connector_list_iter_next(struct drm_connector_list_iter *iter)
+ 	struct list_head *lhead;
+ 	unsigned long flags;
+ 
++	DRM_DEV_INFO(iter->dev->dev, "drm_connector_list_iter_next before lock: %p", &config->connector_list_lock);
+ 	spin_lock_irqsave(&config->connector_list_lock, flags);
++	DRM_DEV_INFO(iter->dev->dev, "drm_connector_list_iter_next locked: %p", &config->connector_list_lock);
++
+ 	lhead = old_conn ? &old_conn->head : &config->connector_list;
+ 
+ 	do {
+@@ -708,6 +711,7 @@ drm_connector_list_iter_next(struct drm_connector_list_iter *iter)
+ 			iter->conn = NULL;
+ 			break;
+ 		}
++		DRM_DEV_INFO(iter->dev->dev, "iter zombie connector");
+ 
+ 		lhead = lhead->next;
+ 		iter->conn = list_entry(lhead, struct drm_connector, head);
+@@ -718,6 +722,7 @@ drm_connector_list_iter_next(struct drm_connector_list_iter *iter)
+ 	if (old_conn)
+ 		__drm_connector_put_safe(old_conn);
+ 	spin_unlock_irqrestore(&config->connector_list_lock, flags);
++	DRM_DEV_INFO(iter->dev->dev, "drm_connector_list_iter_next unlocked: %p", &config->connector_list_lock);
+ 
+ 	return iter->conn;
+ }
+diff --git a/drivers/gpu/drm/drm_edid.c b/drivers/gpu/drm/drm_edid.c
+index ea9a79bc9..bd12e24ef 100644
+--- a/drivers/gpu/drm/drm_edid.c
++++ b/drivers/gpu/drm/drm_edid.c
+@@ -639,6 +639,13 @@ static const struct drm_display_mode edid_est_modes[] = {
+ 	{ DRM_MODE("1152x864", DRM_MODE_TYPE_DRIVER, 108000, 1152, 1216,
+ 		   1344, 1600, 0,  864, 865, 868, 900, 0,
+ 		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) }, /* 1152x864@75Hz */
++
++	{ DRM_MODE("1024x768", DRM_MODE_TYPE_DRIVER, 32000, 1024, 1064,
++		   1112, 1152, 0,  600, 613, 616, 645, 0,
++		   DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC) }, /* 1024x768@43Hz */
++	{ DRM_MODE("800x480", DRM_MODE_TYPE_DRIVER, 32000, 800, 840,
++		   888, 928, 0,  480, 493, 496, 525, 0,
++		   DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC) }, /* 800x480@43Hz */
+ };
+ 
+ struct minimode {
+@@ -1511,15 +1518,23 @@ static const struct drm_display_mode edid_cea_modes_193[] = {
+ 		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+ 	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_64_27, },
+ 	/* 218 - 4096x2160@100Hz 256:135 */
+-	{ DRM_MODE("4096x2160", DRM_MODE_TYPE_DRIVER, 1188000, 4096, 4896,
+-		   4984, 5280, 0, 2160, 2168, 2178, 2250, 0,
+-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+-	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_256_135, },
+-	/* 219 - 4096x2160@120Hz 256:135 */
+-	{ DRM_MODE("4096x2160", DRM_MODE_TYPE_DRIVER, 1188000, 4096, 4184,
+-		   4272, 4400, 0, 2160, 2168, 2178, 2250, 0,
+-		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+-	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_256_135, },
++	// { DRM_MODE("4096x2160", DRM_MODE_TYPE_DRIVER, 1188000, 4096, 4896,
++	// 	   4984, 5280, 0, 2160, 2168, 2178, 2250, 0,
++	// 	   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
++	//   .picture_aspect_ratio = HDMI_PICTURE_ASPECT_256_135, },
++	// /* 219 - 4096x2160@120Hz 256:135 */
++	// { DRM_MODE("4096x2160", DRM_MODE_TYPE_DRIVER, 1188000, 4096, 4184,
++	// 	   4272, 4400, 0, 2160, 2168, 2178, 2250, 0,
++	// 	   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
++	//   .picture_aspect_ratio = HDMI_PICTURE_ASPECT_256_135, },
++
++	{ DRM_MODE("1024x768", DRM_MODE_TYPE_DRIVER, 32000, 1024, 1064,
++		   1112, 1152, 0,  600, 613, 616, 645, 0,
++		   DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC) }, /* 1024x768@43Hz */
++
++	{ DRM_MODE("800x480", DRM_MODE_TYPE_DRIVER, 32000, 800, 840,
++		   888, 928, 0,  480, 493, 496, 525, 0,
++		   DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC) }, /* 800x480@43Hz */
+ };
+ 
+ /*
+diff --git a/drivers/gpu/drm/panel/panel-feiyang-fy07024di26a30d.c b/drivers/gpu/drm/panel/panel-feiyang-fy07024di26a30d.c
+index 581661b50..0ef4016ad 100644
+--- a/drivers/gpu/drm/panel/panel-feiyang-fy07024di26a30d.c
++++ b/drivers/gpu/drm/panel/panel-feiyang-fy07024di26a30d.c
+@@ -218,16 +218,21 @@ static int feiyang_dsi_probe(struct mipi_dsi_device *dsi)
+ 	}
+ 
+ 	ret = drm_panel_of_backlight(&ctx->panel);
++	dev_info(&dsi->dev, "drm_panel_of_backlight: %d\n", ret);
+ 	if (ret)
+ 		return ret;
+ 
+ 	drm_panel_add(&ctx->panel);
+ 
+-	dsi->mode_flags = MIPI_DSI_MODE_VIDEO_BURST;
++	dsi->mode_flags = (MIPI_DSI_MODE_VIDEO |
++				MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
++				MIPI_DSI_MODE_LPM); //MIPI_DSI_MODE_VIDEO_BURST;
+ 	dsi->format = MIPI_DSI_FMT_RGB888;
+ 	dsi->lanes = 4;
+ 
+-	return mipi_dsi_attach(dsi);
++	ret = mipi_dsi_attach(dsi);
++	dev_info(&dsi->dev, "mipi_dsi_attach: %d\n", ret);
++	return ret;
+ }
+ 
+ static int feiyang_dsi_remove(struct mipi_dsi_device *dsi)
+diff --git a/drivers/gpu/drm/verisilicon/inno_hdmi.c b/drivers/gpu/drm/verisilicon/inno_hdmi.c
+index 5384f8802..be6cb5a7e 100644
+--- a/drivers/gpu/drm/verisilicon/inno_hdmi.c
++++ b/drivers/gpu/drm/verisilicon/inno_hdmi.c
+@@ -718,8 +718,8 @@ inno_hdmi_connector_mode_valid(struct drm_connector *connector,
+ {
+ 	u32 vic = drm_match_cea_mode(mode);
+ 
+-	if (mode->clock > 297000)
+-		return MODE_BAD;
++	DRM_DEV_INFO(connector->kdev, "mode check: %d, vic: %d\n", mode->clock, vic);
++
+ 	if (vic >= 1)
+ 		return MODE_OK;
+ 	else
+@@ -751,7 +751,7 @@ static void inno_hdmi_connector_destroy(struct drm_connector *connector)
+ }
+ 
+ static const struct drm_connector_funcs inno_hdmi_connector_funcs = {
+-	.fill_modes = inno_hdmi_probe_single_connector_modes,
++	.fill_modes = drm_helper_probe_single_connector_modes,
+ 	.detect = inno_hdmi_connector_detect,
+ 	.destroy = inno_hdmi_connector_destroy,
+ 	.reset = drm_atomic_helper_connector_reset,
+diff --git a/drivers/gpu/drm/verisilicon/starfive_drm_dsi.c b/drivers/gpu/drm/verisilicon/starfive_drm_dsi.c
+index 74372309e..87b8ab63f 100644
+--- a/drivers/gpu/drm/verisilicon/starfive_drm_dsi.c
++++ b/drivers/gpu/drm/verisilicon/starfive_drm_dsi.c
+@@ -626,37 +626,37 @@ static int cdns_dsi_get_clock(struct device *dev, struct cdns_dsi *dsi)
+ //get reset func
+ static int cdns_dsi_get_reset(struct device *dev, struct cdns_dsi *dsi)
+ {
+-	dsi->dpi_rst = reset_control_get_exclusive(dev, "dsi_dpi");
++	dsi->dpi_rst = devm_reset_control_get(dev, "dsi_dpi");
+ 	if (IS_ERR(dsi->dpi_rst)){
+ 		dev_err(dev, "failed to get dpi_rst\n");
+ 		return PTR_ERR(dsi->dpi_rst);
+ 	}
+ 
+-	dsi->apb_rst = reset_control_get_exclusive(dev, "dsi_apb");
++	dsi->apb_rst = devm_reset_control_get(dev, "dsi_apb");
+ 	if (IS_ERR(dsi->apb_rst)){
+ 		dev_err(dev, "failed to get apb_rst\n");
+ 		return PTR_ERR(dsi->apb_rst);
+ 	}
+ 
+-	dsi->rxesc_rst = reset_control_get_exclusive(dev, "dsi_rxesc");
++	dsi->rxesc_rst = devm_reset_control_get(dev, "dsi_rxesc");
+ 	if (IS_ERR(dsi->rxesc_rst)){
+ 		dev_err(dev, "failed to get rxesc_rst\n");
+ 		return PTR_ERR(dsi->rxesc_rst);
+ 	}
+ 
+-	dsi->sys_rst = reset_control_get_exclusive(dev, "dsi_sys");
++	dsi->sys_rst = devm_reset_control_get(dev, "dsi_sys");
+ 	if (IS_ERR(dsi->sys_rst)){
+ 		dev_err(dev, "failed to get sys_rst\n");
+ 		return PTR_ERR(dsi->sys_rst);
+ 	}
+ 
+-	dsi->txbytehs_rst = reset_control_get_exclusive(dev, "dsi_txbytehs");
++	dsi->txbytehs_rst = devm_reset_control_get(dev, "dsi_txbytehs");
+ 	if (IS_ERR(dsi->txbytehs_rst)){
+ 		dev_err(dev, "failed to get txbytehs_rst\n");
+ 		return PTR_ERR(dsi->txbytehs_rst);
+ 	}
+ 
+-	dsi->txesc_rst = reset_control_get_exclusive(dev, "dsi_txesc");
++	dsi->txesc_rst = devm_reset_control_get(dev, "dsi_txesc");
+ 	if (IS_ERR(dsi->txesc_rst)){
+ 		dev_err(dev, "failed to get txesc_rst\n");
+ 		return PTR_ERR(dsi->txesc_rst);
+diff --git a/drivers/gpu/drm/verisilicon/vs_dc.c b/drivers/gpu/drm/verisilicon/vs_dc.c
+index 26e8b63bd..81f0d31d5 100644
+--- a/drivers/gpu/drm/verisilicon/vs_dc.c
++++ b/drivers/gpu/drm/verisilicon/vs_dc.c
+@@ -746,6 +746,8 @@ static void vs_dc_enable(struct device *dev, struct drm_crtc *crtc)
+ 	struct dc_hw_display display;
+ 	int ret;
+ 
++	dev_info(dev, "SETTING CLOCK\n");
++
+ 	if (dc->init_finished == false) {
+ 		ret = dc_vout_clk_enable(dev, dc);
+ 		if (ret)
+@@ -840,6 +842,8 @@ static void vs_dc_enable(struct device *dev, struct drm_crtc *crtc)
+ 	//regmap_update_bits(dc->dss_regmap, 0x8, BIT(3), 1 << 3);
+ 
+ 	dc_hw_setup_display(&dc->hw, &display);
++
++	dev_info(dev, "DONE CLOCK\n");
+ }
+ 
+ static void vs_dc_disable(struct device *dev, struct drm_crtc *crtc)
+diff --git a/drivers/gpu/drm/verisilicon/vs_simple_enc.c b/drivers/gpu/drm/verisilicon/vs_simple_enc.c
+index 11edc3c89..f812fd0fe 100755
+--- a/drivers/gpu/drm/verisilicon/vs_simple_enc.c
++++ b/drivers/gpu/drm/verisilicon/vs_simple_enc.c
+@@ -207,6 +207,7 @@ static int encoder_bind(struct device *dev, struct device *master, void *data)
+ 
+ 	ret = drm_encoder_init(drm_dev, encoder, &encoder_funcs,
+ 				   simple->priv->encoder_type, NULL);
++	dev_info(dev,"drm_encoder_init ret=%d\n", ret);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -215,8 +216,10 @@ static int encoder_bind(struct device *dev, struct device *master, void *data)
+ 	encoder->possible_crtcs =
+ 			drm_of_find_possible_crtcs(drm_dev, dev->of_node);
+ 	encoder->possible_crtcs = 2;
++	dev_info(dev,"drm_of_find_possible_crtcs ret=%d\n", encoder->possible_crtcs);
+ 
+ 	ret = drm_of_find_panel_or_bridge(dev->of_node, 1, 0,&tmp_panel, &bridge);
++	dev_info(dev,"drm_of_find_panel_or_bridge ret=%d\n", ret);
+ 	if (ret){
+ 		printk("no panel, %d\n",ret);
+ 		//dev_err_probe(dev, ret, "endpoint returns %d\n", ret);
+@@ -230,6 +233,7 @@ static int encoder_bind(struct device *dev, struct device *master, void *data)
+ #else
+ 	ret = drm_bridge_attach(encoder, bridge, NULL);
+ #endif
++	dev_info(dev,"drm_bridge_attach ret=%d\n", ret);
+ 	if (ret)
+ 		goto err;
+ 
