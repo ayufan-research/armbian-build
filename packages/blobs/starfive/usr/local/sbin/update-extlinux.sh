@@ -37,11 +37,18 @@ emit_kernel() {
     echo "    fdt $MOUNT_PREFIX/dtb-$VERSION"
   else
     if [[ ! -d "/boot/dtbs/$VERSION" ]]; then
-      mkdir -p /boot/dtbs
-      cp -au "/usr/lib/linux-image-$VERSION" "/boot/dtbs/$VERSION"
+      if [[ -d "/usr/lib/linux-image-$VERSION" ]]; then
+        mkdir -p /boot/dtbs
+        cp -au "/usr/lib/linux-image-$VERSION" "/boot/dtbs/$VERSION"
+        echo "    devicetreedir $MOUNT_PREFIX/dtbs/$VERSION"
+      elif [[ -d /boot/dtb ]]; then
+        echo "    devicetreedir $MOUNT_PREFIX/dtb"
+      fi
+    else
+      echo "    devicetreedir $MOUNT_PREFIX/dtbs/$VERSION"
     fi
-    echo "    devicetreedir $MOUNT_PREFIX/dtbs/$VERSION"
   fi
+
   echo "    append $APPEND"
   echo ""
 }
